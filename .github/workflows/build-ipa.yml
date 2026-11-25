@@ -1,0 +1,84 @@
+name: Build Roam Control IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'RoamControl/**'
+      - 'RoamControl.xcodeproj/**'
+      - 'Configuration/**'
+      - 'Frameworks/**'
+      - '.github/workflows/build-ipa.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: roam-control-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iOS IPA
+    runs-on: macos-26
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode and SDK versions
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Build Release app for physical iPhone
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          BUILD_TIMESTAMP="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          xcodebuild \
+            -project RoamControl.xcodeproj \
+            -scheme RoamControl \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY='' \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            ROAMCONTROL_BUILD_TIMESTAMP="$BUILD_TIMESTAMP" \
+            clean build
+
+      - name: Package unsigned IPA for SideStore
+        run: |
+          set -euo pipefail
+          APP_PATH="build/DerivedData/Build/Products/Release-iphoneos/RoamControl.app"
+          test -d "$APP_PATH"
+          test -f "$APP_PATH/Info.plist"
+          test -f "$APP_PATH/RoamControl"
+
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist"
+          plutil -lint "$APP_PATH/Info.plist"
+
+          mkdir -p build/ipa/Payload
+          ditto "$APP_PATH" build/ipa/Payload/RoamControl.app
+          cd build/ipa
+          /usr/bin/zip -qry "../RoamControl-unsigned-${GITHUB_RUN_NUMBER}.ipa" Payload
+          cd ../..
+          test -s "build/RoamControl-unsigned-${GITHUB_RUN_NUMBER}.ipa"
+          unzip -l "build/RoamControl-unsigned-${GITHUB_RUN_NUMBER}.ipa"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: RoamControl-unsigned-IPA-build-${{ github.run_number }}
+          path: build/RoamControl-unsigned-${{ github.run_number }}.ipa
+          if-no-files-found: error
+          retention-days: 14
